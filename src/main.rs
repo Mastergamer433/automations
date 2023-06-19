@@ -27,7 +27,8 @@ use diesel::{
 use poise::serenity_prelude as serenity;
 use poise::serenity_prelude::async_trait;
 use tracing::{info, error};
-use std::{fs::File, io::BufReader, env, collections::HashMap, env::var, sync::Mutex, time::Duration};
+use std::{thread, time::Instant, fs::File, io::BufReader, env, collections::HashMap, env::var, sync::Mutex, time::Duration};
+use tera::Tera;
 
 const CONFIG_PATH: &str = "./config.json";
 
@@ -54,11 +55,23 @@ fn init_config() -> Result<Config, ConfigError> {
     Ok(config)
 }
 
+fn kick_inactive_users(ctx: Context) {
+
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     let config = init_config()?;
+
+    // Use globbing
+    let tera = match Tera::new("templates/**/*.html") {
+	Ok(t) => t,
+	Err(e) => {
+            println!("Parsing error(s): {}", e);
+            ::std::process::exit(1);
+	}
+    };
     let options = poise::FrameworkOptions {
         commands: commands::commands(),
         /// The global error handler for all error cases that may occur
@@ -109,11 +122,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Box::pin(async move {
                 println!("Logged in as {}", _ready.user.name);
                 poise::builtins::register_globally(ctx, &framework.options().commands).await?;
+		let scheduler = thread::spawn(|| {
+		    let wait_time = Duration::from_millis(10000);
+
+		    // Make this an infinite loop
+		    // Or some control path to exit the loop
+		    for _ in 0..5 {
+			let start = Instant::now();
+			eprintln!("Scheduler starting at {:?}", start);
+
+			let thread_kick_inactive_users = thread::spawn(|| kick_inactive_users);
+
+			thread_kick_inactive_users.join().expect("Thread Kick Inactive Users panicked");
+
+			let runtime = start.elapsed();
+
+			if let Some(remaining) = wait_time.checked_sub(runtime) {
+			    eprintln!(
+				"schedule slice has time left over; sleeping for {:?}",
+				remaining
+			    );
+			    thread::sleep(remaining);
+			}
+		    }
+		});
+
+		scheduler.join().expect("Scheduler panicked");
                 Ok(Data {
 		    config: config,
 		    db_pool: get_db_pool(),
                     votes: Mutex::new(HashMap::new()),
-		    points: 0
+		    points: 0,
+		    tera: tera
+
                 })
             })
         })

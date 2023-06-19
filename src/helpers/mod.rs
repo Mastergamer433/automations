@@ -1,6 +1,7 @@
 pub mod get_options;
 pub mod check_permissions;
 pub mod transfer;
+pub mod generate_html;
 
 use crate::{
     schema,

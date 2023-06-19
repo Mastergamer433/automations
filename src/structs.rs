@@ -1,4 +1,5 @@
 pub use anyhow::{Error, Result};
+use tera::Tera;
 use crate::config::Config;
 use diesel::{
     mysql::MysqlConnection,
@@ -14,7 +15,9 @@ pub struct Data {
     pub config: Config,
     pub db_pool: DbPool,
     pub votes: Mutex<HashMap<String, u32>>,
-    pub points: u32
+    pub points: u32,
+    pub tera: Tera
+
 }
 
 pub enum TransferError {
