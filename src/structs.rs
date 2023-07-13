@@ -1,37 +1,9 @@
-pub use anyhow::{Error, Result};
-use tera::Tera;
-use crate::config::Config;
-use diesel::{
-    mysql::MysqlConnection,
-    prelude::*,
-    r2d2::ConnectionManager,
-    r2d2::Pool,
-};
-use std::{fs::File, io::BufReader, env, collections::HashMap, env::var, sync::Mutex, time::Duration};
+use serde_json::{Value};
+use serde::{Serialize, Deserialize};
 
-pub type Command = poise::Command<Data, CommandError>;
-
-pub struct Data {
-    pub config: Config,
-    pub db_pool: DbPool,
-    pub votes: Mutex<HashMap<String, u32>>,
-    pub points: u32,
-    pub tera: Tera
-
+// Define a struct to represent the command structure
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Command {
+    pub command: String,
+    pub arguments: Value,
 }
-
-pub enum TransferError {
-    NoBalance,
-    NotEnoughPoints,
-}
-
-pub enum Permission {
-    Admin = 2,
-    SettingsGuild = 1,
-}
-
-pub type DbPool = Pool<ConnectionManager<MysqlConnection>>;
-pub type CommandResult<E=Error> = Result<(), E>;
-pub type CommandError = Error;
-pub type Context<'a> = poise::Context<'a, Data, CommandError>;
-pub type FrameworkContext<'a> = poise::FrameworkContext<'a, Data, CommandError>;

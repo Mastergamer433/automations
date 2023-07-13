@@ -1,51 +1,49 @@
-#![warn(clippy::str_to_string)]
-
-mod commands;
-mod events;
 mod config;
 mod error;
-mod schema;
-mod models;
 mod structs;
-mod helpers;
+mod handler;
 
-use config::Config;
-use models::{NewBalance, Balance};
-use structs::{
-    DbPool,
-    Context,
-    Data,
-};
+use anyhow::Error;
 use error::ConfigError;
-use dotenvy::dotenv;
-use diesel::{
-    mysql::MysqlConnection,
-    prelude::*,
-    r2d2::ConnectionManager,
-    r2d2::Pool,
-};
-use poise::serenity_prelude as serenity;
-use poise::serenity_prelude::async_trait;
-use tracing::{info, error};
-use std::{thread, time::Instant, fs::File, io::BufReader, env, collections::HashMap, env::var, sync::Mutex, time::Duration};
-use tera::Tera;
+use tracing_subscriber::util::TryInitError;
+use core::time::Duration;
+use std::env;
+use std::process;
+use std::process::Command;
+use config::Config;
+use std::fs::File;
+use std::io::BufReader;
+use paho_mqtt::Message;
+use std::thread;
+use handler::message_handler::message_handler;
 
 const CONFIG_PATH: &str = "./config.json";
+const DFLT_BROKER:&str = "tcp://10.1.10.37:1883";
+const DFLT_CLIENT:&str = "912838120038283";
+const DFLT_TOPICS:&[&str] = &["rust/mqtt"];
+// Define the qos.
+const QOS:i32 = 0;
+const DFLT_QOS:&[i32] = &[0];
+// Reconnect to the broker when connection is lost.
+fn try_reconnect(cli: &paho_mqtt::Client) -> bool
+{
+    println!("Connection lost. Waiting to retry connection");
+    for _ in 0..12 {
+        thread::sleep(Duration::from_millis(500));
+        if cli.reconnect().is_ok() {
+            println!("Successfully reconnected");
+            return true;
+        }
+    }
+    println!("Unable to reconnect after several attempts.");
+    false
+}
 
-pub fn get_db_pool() -> DbPool {
-
-    let database_url =
-        env::var("DATABASE_URL").expect("Missing the DATABASE_URL environment variable");
-
-    info!("Connecting to database {}...", database_url);
-    let manager = ConnectionManager::<MysqlConnection>::new(database_url);
-
-    let pool = Pool::builder()
-        .build(manager)
-        .expect("Failed to create database connection pool.");
-
-    let mut db = pool.get().expect("Couldn't get db connection from pool");
-    pool
+fn subscribe_topics(cli: &paho_mqtt::Client) {
+    if let Err(e) = cli.subscribe_many(DFLT_TOPICS, DFLT_QOS) {
+        println!("Error subscribes topics: {:?}", e);
+        process::exit(1);
+    }
 }
 
 fn init_config() -> Result<Config, ConfigError> {
@@ -55,115 +53,55 @@ fn init_config() -> Result<Config, ConfigError> {
     Ok(config)
 }
 
-fn kick_inactive_users(ctx: Context) {
-
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    dotenv().ok();
+fn main() -> Result<(), Error>{
     let config = init_config()?;
 
-    // Use globbing
-    let tera = match Tera::new("templates/**/*.html") {
-	Ok(t) => t,
-	Err(e) => {
-            println!("Parsing error(s): {}", e);
-            ::std::process::exit(1);
-	}
-    };
-    let options = poise::FrameworkOptions {
-        commands: commands::commands(),
-        /// The global error handler for all error cases that may occur
-        on_error: |error| Box::pin(async move {
-	    match error {
-		poise::FrameworkError::Setup { error, .. } => panic!("Failed to start bot: {:?}", error),
-		poise::FrameworkError::Command { error, ctx } => {
-		    println!("Error in command `{}`: {:?}", ctx.command().name, error,);
-		}
-		error => {
-		    if let Err(e) = poise::builtins::on_error(error).await {
-			println!("Error while handling error: {}", e)
-		    }
-		}
-	    }
-	}),
-        /// This code is run before every command
-        pre_command: |ctx| {
-            Box::pin(async move {
-                println!("Executing command {}...", ctx.command().qualified_name);
-            })
-        },
-        /// This code is run after a command if it was successful (returned Ok)
-        post_command: |ctx| {
-            Box::pin(async move {
-                println!("Executed command {}!", ctx.command().qualified_name);
-            })
-        },
-        command_check: Some(|ctx| {
-            Box::pin(async move {
-                if ctx.author().id == ctx.data().config.bot.userId{
-		    println!("Bot");
-                    return Ok(false);
-                }
-		println!("Not bot");
-                Ok(true)
-            })
-        }),
-        /// Enforce command checks even for owners (enforced by default)
-        /// Set to true to bypass checks, which is useful for testing
-        event_handler: |_ctx, event, _framework, _data| Box::pin(events::handler(_ctx, event, _framework, _data)),
-        ..Default::default()
-    };
 
-    poise::Framework::builder()
-        .token(&config.bot.token)
-        .setup(move |ctx, _ready, framework| {
-            Box::pin(async move {
-                println!("Logged in as {}", _ready.user.name);
-                poise::builtins::register_globally(ctx, &framework.options().commands).await?;
-		let scheduler = thread::spawn(|| {
-		    let wait_time = Duration::from_millis(10000);
+    let host = env::args().nth(1).unwrap_or_else(||
+						 DFLT_BROKER.to_string()
+    );
 
-		    // Make this an infinite loop
-		    // Or some control path to exit the loop
-		    for _ in 0..5 {
-			let start = Instant::now();
-			eprintln!("Scheduler starting at {:?}", start);
+    // Define the set of options for the create.
+    // Use an ID for a persistent session.
+    let create_opts = paho_mqtt::CreateOptionsBuilder::new()
+	.server_uri(host)
+	.client_id(DFLT_CLIENT.to_string())
+	.finalize();
 
-			let thread_kick_inactive_users = thread::spawn(|| kick_inactive_users);
+    // Create a client.
+    let mut cli = paho_mqtt::Client::new(create_opts).unwrap_or_else(|err| {
+	println!("Error creating the client: {:?}", err);
+	process::exit(1);
+    });
 
-			thread_kick_inactive_users.join().expect("Thread Kick Inactive Users panicked");
+    // Define the set of options for the connection.
+    let conn_opts = paho_mqtt::ConnectOptionsBuilder::new()
+        .user_name(&config.username)
+        .password(&config.password)
+	.keep_alive_interval(Duration::from_secs(20))
+	.clean_session(true)
+	.finalize();
 
-			let runtime = start.elapsed();
-
-			if let Some(remaining) = wait_time.checked_sub(runtime) {
-			    eprintln!(
-				"schedule slice has time left over; sleeping for {:?}",
-				remaining
-			    );
-			    thread::sleep(remaining);
-			}
-		    }
-		});
-
-		scheduler.join().expect("Scheduler panicked");
-                Ok(Data {
-		    config: config,
-		    db_pool: get_db_pool(),
-                    votes: Mutex::new(HashMap::new()),
-		    points: 0,
-		    tera: tera
-
-                })
-            })
-        })
-        .options(options)
-        .intents(
-            serenity::GatewayIntents::non_privileged() | serenity::GatewayIntents::MESSAGE_CONTENT | serenity::GatewayIntents::GUILD_PRESENCES,
-        )
-        .run()
-        .await
-        .unwrap();
+    // Connect and wait for it to complete or fail.
+    if let Err(e) = cli.connect(conn_opts) {
+	println!("Unable to connect:\n\t{:?}", e);
+	process::exit(1);
+    }
+    subscribe_topics(&cli);
+    let rx = cli.start_consuming();
+    for msg in rx.iter() {
+        if let Some(msg) = msg {
+	    println!("got message");
+	    message_handler(msg);
+        }
+        else if !cli.is_connected() {
+            if try_reconnect(&cli) {
+                println!("Resubscribe topics...");
+                subscribe_topics(&cli);
+            } else {
+                break;
+            }
+        }
+    }
     Ok(())
 }

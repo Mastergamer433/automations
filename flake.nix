@@ -18,7 +18,7 @@
         pkgs = nixpkgs.legacyPackages.${system};
 
         # DON'T FORGET TO PUT YOUR PACKAGE NAME HERE, REMOVING `throw`
-        crateName = "discord-bot";
+        crateName = "automations";
 
         inherit (import "${crate2nix}/tools.nix" { inherit pkgs; })
           generatedCargoNix;
@@ -30,9 +30,13 @@
           inherit pkgs;
           defaultCrateOverrides = pkgs.defaultCrateOverrides // {
             # Crate dependency overrides go here
-            "discord-bot" = oldAttrs: {
-              buildInputs = with pkgs; [ pkgs.mariadb pkgs.libmysqlclient ];
+            "automations" = oldAttrs: {
+              buildInputs = with pkgs; [ cmake mosquitto openssl ];
             };
+            "paho-mqtt-sys" = oldAttrs: {
+              buildInputs = with pkgs; [ cmake openssl ];
+            };
+
           };
         };
 
@@ -43,7 +47,7 @@
 
         devShell = pkgs.mkShell {
           inputsFrom = builtins.attrValues self.packages.${system};
-          buildInputs = [ pkgs.cargo pkgs.rust-analyzer pkgs.clippy pkgs.diesel-cli ];
+          buildInputs = [ pkgs.cargo pkgs.rust-analyzer pkgs.clippy pkgs.cmake ];
         };
       });
 }
